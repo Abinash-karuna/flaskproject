@@ -1,0 +1,6 @@
+flask
+opencv-python
+pytesseract
+numpy
+pyttsx3
+gunicorn
