@@ -2,7 +2,6 @@ from flask import Flask, request, jsonify
 import cv2
 import pytesseract
 import numpy as np
-import pyttsx3
 import time
 
 app = Flask(__name__)
@@ -23,10 +22,6 @@ net.setInputSize(320, 320)
 net.setInputScale(1.0 / 127.5)
 net.setInputMean((127.5, 127.5, 127.5))
 net.setInputSwapRB(True)
-
-# Initialize Text-to-Speech
-engine = pyttsx3.init()
-
 
 @app.route('/upload', methods=['POST'])
 def upload_image():
