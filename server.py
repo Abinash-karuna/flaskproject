@@ -1,83 +1,106 @@
-from flask import Flask, request, jsonify
 import cv2
 import pytesseract
+import pyttsx3
 import numpy as np
-import time
 
-app = Flask(__name__)
+# Initialize text-to-speech engine
+engine = pyttsx3.init()
 
-# Initialize Tesseract OCR
-pytesseract.pytesseract.tesseract_cmd = r'/app/.apt/usr/bin/tesseract'  # Render path for Tesseract
+# Specify the path to the Tesseract executable
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-# Load Object Detection Model
-thres = 0.45  # Threshold to detect objects
+# Initialize webcam
+cap = cv2.VideoCapture(0)  # 0 represents the default webcam
+
+# Check if the webcam is opened correctly
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    engine.say("Error: Could not open webcam.")
+    engine.runAndWait()
+    exit()
+
+# Load object detection model
+thres = 0.45  # Threshold to detect object
 classNames = []
-with open("coco.names", 'rt') as f:
+classFile = 'coco.names'
+with open(classFile, 'rt') as f:
     classNames = f.read().rstrip('\n').split('\n')
-configPath = "ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt"
-weightsPath = "frozen_inference_graph.pb"
-
+configPath = 'ssd_mobilenet_v3_large_coco_2020_01_14.pbtxt'
+weightsPath = 'frozen_inference_graph.pb'
 net = cv2.dnn_DetectionModel(weightsPath, configPath)
 net.setInputSize(320, 320)
 net.setInputScale(1.0 / 127.5)
 net.setInputMean((127.5, 127.5, 127.5))
 net.setInputSwapRB(True)
 
-@app.route('/upload', methods=['POST'])
-def upload_image():
-    image_data = request.data
-    np_arr = np.frombuffer(image_data, np.uint8)
-    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Could not read frame.")
+        engine.say("Error: Could not read frame.")
+        engine.runAndWait()
+        break
 
-    filename = f"received_{int(time.time())}.jpg"
-    cv2.imwrite(filename, img)
-    print(f"Image received and saved as {filename}")
+    # Convert frame to grayscale
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Perform Object Detection
-    detected_objects = detect_objects(img)
+    # Apply Gaussian Blur to reduce noise
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-    # Perform Text Recognition (OCR)
-    detected_text = detect_text(img)
+    # Apply Adaptive Thresholding for better text extraction
+    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
 
-    # Convert results to JSON and return
-    result = {
-        "detected_text": detected_text,
-        "detected_objects": detected_objects
-    }
+    # Perform OCR with bounding boxes
+    custom_config = r'--oem 3 --psm 6 -l eng'
+    data = pytesseract.image_to_data(thresh, config=custom_config, output_type=pytesseract.Output.DICT)
 
-    return jsonify(result), 200
+    detected_text = ""
+
+    for i in range(len(data['text'])):
+        conf = int(data['conf'][i])
+        text = data['text'][i].strip()
+
+        if text and conf > 70:  # Ignore low-confidence words
+            x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            detected_text += text + " "
+
+    if not detected_text:  # If no text is detected
+        detected_text = "No text is present"
 
 
-def detect_objects(img):
-    classIds, confs, bbox = net.detect(img, confThreshold=thres)
+    # Perform object detection
+    classIds, confs, bbox = net.detect(frame, confThreshold=thres)
     detected_objects = {}
 
     if len(classIds) != 0:
         for classId, confidence, box in zip(classIds.flatten(), confs.flatten(), bbox):
             className = classNames[classId - 1]
             detected_objects[className] = detected_objects.get(className, 0) + 1
-            cv2.rectangle(img, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]), (0, 255, 0), 2)
-            cv2.putText(img, f"{className} {round(confidence * 100, 2)}%", (box[0], box[1] - 10),
+            cv2.rectangle(frame, (box[0], box[1]), (box[0] + box[2], box[1] + box[3]), (0, 255, 0), 2)
+            cv2.putText(frame, f"{className} {round(confidence * 100, 2)}%", (box[0], box[1] - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-    return detected_objects
+    cv2.imshow("Live OCR & Object Detection", frame)
 
+    key = cv2.waitKey(1) & 0xFF
 
-def detect_text(img):
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
+    if key == ord('s'):
+        print("Detected Text:", detected_text)
+        engine.say(detected_text)
+        engine.runAndWait()
 
-    custom_config = r'--oem 3 --psm 6 -l eng'
-    data = pytesseract.image_to_data(thresh, config=custom_config, output_type=pytesseract.Output.DICT)
+    elif key == ord('l') and detected_objects:
+        object_names = [f"{count} {obj}" for obj, count in detected_objects.items()]
+        object_names_str = ', '.join(object_names)
+        obj_result = f"Detected objects are: {object_names_str}"
+        print(obj_result)
+        engine.say(obj_result)
+        engine.runAndWait()
 
-    detected_text = ""
-    for i in range(len(data['text'])):
-        if int(data['conf'][i]) > 70:
-            detected_text += data['text'][i] + " "
+    elif key == ord('q'):
+        break
 
-    return detected_text if detected_text else "No text detected"
-
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+cap.release()
+cv2.destroyAllWindows()
